@@ -197,31 +197,45 @@ export default function App() {
         const jsonData = XLSX.utils.sheet_to_json(worksheet) as any[];
 
         // Convert Excel data to Course objects
-        const newCourses: Course[] = jsonData.map((row, index) => {
+        const usedIds = new Set(courses.map(c => c.id));
+        const newCourses: Course[] = [];
+
+        jsonData.forEach((row, index) => {
           const code = row['Course Code'] || row['Code'] || row['code'] || '';
           const title = row['Title'] || row['title'] || row['Course Title'] || '';
+
+          if (!code || !title) {
+            return; // Only include courses with code and title
+          }
+
           const instructor = (row['Instructor'] || row['instructor'] || 'TBD') as Faculty;
           const room = row['Room'] || row['room'] || 'TBD';
           const status = (row['Status'] || row['status'] || 'backlog') as 'confirmed' | 'tentative' | 'backlog';
 
-          return {
-            id: code.toLowerCase().replace(/[^a-z0-9]/g, '-') || `course-${index}`,
-            code: code,
-            title: title,
-            instructor: instructor,
-            room: room,
+          const baseIdFromCode = code.toLowerCase().replace(/[^a-z0-9]/g, '-');
+          const baseId = baseIdFromCode ? baseIdFromCode : `course-${index}`;
+          let uniqueId = baseId;
+          let suffix = 1;
+          while (usedIds.has(uniqueId)) {
+            uniqueId = `${baseId}-${suffix}`;
+            suffix += 1;
+          }
+          usedIds.add(uniqueId);
+
+          newCourses.push({
+            id: uniqueId,
+            code,
+            title,
+            instructor,
+            room,
             timeSlots: [],
-            status: status,
-          };
-        }).filter(course => course.code && course.title); // Only include courses with code and title
+            status,
+          });
+        });
 
         if (newCourses.length > 0) {
-          // Merge with existing courses, avoiding duplicates by code
-          const existingCodes = new Set(courses.map(c => c.code));
-          const uniqueNewCourses = newCourses.filter(nc => !existingCodes.has(nc.code));
-          
-          setCourses([...courses, ...uniqueNewCourses]);
-          toast.success(`Successfully imported ${uniqueNewCourses.length} courses`);
+          setCourses([...courses, ...newCourses]);
+          toast.success(`Successfully imported ${newCourses.length} courses`);
         } else {
           toast.error('No valid courses found in the spreadsheet');
         }
