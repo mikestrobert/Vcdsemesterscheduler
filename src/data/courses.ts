@@ -3,7 +3,7 @@ import { Course } from '../types/course';
 export const INITIAL_COURSES: Course[] = [
   // Confirmed courses
   {
-    id: 'vcde-707',
+    id: 'vcde-707-01',
     code: 'VCDE-707',
     title: 'Web and UI Design',
     instructor: 'Mike Strobert',
@@ -12,10 +12,11 @@ export const INITIAL_COURSES: Course[] = [
       { day: 'Tuesday', startTime: '11:00', endTime: '13:50' },
       { day: 'Thursday', startTime: '11:00', endTime: '12:50' }
     ],
-    status: 'confirmed'
+    status: 'confirmed',
+    sectionNumber: '01'
   },
   {
-    id: 'vcde-708',
+    id: 'vcde-708-01',
     code: 'VCDE-708',
     title: 'Typography',
     instructor: 'Anne Jordan',
@@ -23,10 +24,11 @@ export const INITIAL_COURSES: Course[] = [
     timeSlots: [
       { day: 'Monday', startTime: '14:00', endTime: '16:50' }
     ],
-    status: 'confirmed'
+    status: 'confirmed',
+    sectionNumber: '01'
   },
   {
-    id: 'vcde-711',
+    id: 'vcde-711-01',
     code: 'VCDE-711',
     title: 'Design Methodology',
     instructor: 'Dan DeLuna',
@@ -34,10 +36,11 @@ export const INITIAL_COURSES: Course[] = [
     timeSlots: [
       { day: 'Wednesday', startTime: '09:00', endTime: '11:50' }
     ],
-    status: 'confirmed'
+    status: 'confirmed',
+    sectionNumber: '01'
   },
   {
-    id: 'vcde-723',
+    id: 'vcde-723-01',
     code: 'VCDE-723',
     title: 'Interaction Design',
     instructor: 'Adam Smith',
@@ -45,10 +48,11 @@ export const INITIAL_COURSES: Course[] = [
     timeSlots: [
       { day: 'Thursday', startTime: '14:00', endTime: '16:50' }
     ],
-    status: 'confirmed'
+    status: 'confirmed',
+    sectionNumber: '01'
   },
   {
-    id: 'vcde-728',
+    id: 'vcde-728-01',
     code: 'VCDE-728',
     title: 'Motion Graphics',
     instructor: 'Peter Byrne',
@@ -56,10 +60,11 @@ export const INITIAL_COURSES: Course[] = [
     timeSlots: [
       { day: 'Tuesday', startTime: '09:00', endTime: '11:50' }
     ],
-    status: 'confirmed'
+    status: 'confirmed',
+    sectionNumber: '01'
   },
   {
-    id: 'vcde-722',
+    id: 'vcde-722-01',
     code: 'VCDE-722',
     title: 'Design Praxis I',
     instructor: 'Mike Strobert',
@@ -67,7 +72,8 @@ export const INITIAL_COURSES: Course[] = [
     timeSlots: [
       { day: 'Friday', startTime: '10:00', endTime: '12:50' }
     ],
-    status: 'confirmed'
+    status: 'confirmed',
+    sectionNumber: '01'
   },
   // Tentative courses
   {

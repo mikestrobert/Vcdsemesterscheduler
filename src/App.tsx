@@ -6,8 +6,8 @@ import { FacultyChip } from './components/FacultyChip';
 import { CalendarGrid } from './components/CalendarGrid';
 import { EditCourseDialog } from './components/EditCourseDialog';
 import { INITIAL_COURSES } from './data/courses';
-import { Course, Faculty, DayOfWeek, TIME_SLOTS, DAYS } from './types/course';
-import { Calendar, Clock, Users, Upload, Trash2, Save, Check } from 'lucide-react';
+import { Course, DayOfWeek, TIME_SLOTS, DAYS, Faculty } from './types/course';
+import { Calendar, Clock, Users, Upload, Trash2, Save, Check, Star } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
 import { Textarea } from './components/ui/textarea';
@@ -19,8 +19,11 @@ import * as XLSX from 'xlsx';
 import { toast } from 'sonner@2.0.3';
 import { motion } from 'motion/react';
 
-const FACULTY: Faculty[] = ['Mike Strobert', 'Anne Jordan', 'Dan DeLuna', 'Adam Smith', 'Peter Byrne'];
 const STORAGE_KEY = 'vcd-mfa-schedule';
+const DEFAULT_STORAGE_KEY = 'vcd-mfa-default-schedule';
+const FACULTY_STORAGE_KEY = 'vcd-mfa-faculty-list';
+
+const DEFAULT_FACULTY: Faculty[] = ['Mike Strobert', 'Anne Jordan', 'Dan DeLuna', 'Adam Smith', 'Peter Byrne', 'TBD'];
 
 // Simple available course card - only shows code and title
 function AvailableCourseCard({ course }: { course: Course }) {
@@ -47,21 +50,44 @@ function AvailableCourseCard({ course }: { course: Course }) {
 export default function App() {
   const [courses, setCourses] = useState<Course[]>(() => {
     // Try to load from localStorage on initial mount
+    // First check for current session save
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       try {
         return JSON.parse(saved);
       } catch (e) {
         console.error('Failed to parse saved courses:', e);
-        return INITIAL_COURSES;
       }
     }
+    // Then check for default save
+    const defaultSaved = localStorage.getItem(DEFAULT_STORAGE_KEY);
+    if (defaultSaved) {
+      try {
+        return JSON.parse(defaultSaved);
+      } catch (e) {
+        console.error('Failed to parse default courses:', e);
+      }
+    }
+    // Finally fallback to INITIAL_COURSES
     return INITIAL_COURSES;
+  });
+  const [facultyList, setFacultyList] = useState<Faculty[]>(() => {
+    // Load from localStorage or use defaults
+    const saved = localStorage.getItem(FACULTY_STORAGE_KEY);
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error('Failed to parse saved faculty list:', e);
+      }
+    }
+    return DEFAULT_FACULTY;
   });
   const [notes, setNotes] = useState('');
   const [editingCourse, setEditingCourse] = useState<Course | null>(null);
   const [showClearDialog, setShowClearDialog] = useState(false);
   const [showClearScheduleDialog, setShowClearScheduleDialog] = useState(false);
+  const [showSaveDefaultDialog, setShowSaveDefaultDialog] = useState(false);
   const [isSaved, setIsSaved] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastSavedRef = useRef<string>(JSON.stringify(INITIAL_COURSES));
@@ -73,6 +99,22 @@ export default function App() {
       setIsSaved(false);
     }
   }, [courses]);
+
+  // Sync faculty list with courses - add any new instructors found in courses
+  useEffect(() => {
+    const allInstructors = Array.from(new Set(courses.map(c => c.instructor).filter(Boolean)));
+    const newInstructors = allInstructors.filter(inst => !facultyList.includes(inst));
+    if (newInstructors.length > 0) {
+      const updatedList = [...facultyList, ...newInstructors];
+      setFacultyList(updatedList);
+      localStorage.setItem(FACULTY_STORAGE_KEY, JSON.stringify(updatedList));
+    }
+  }, [courses, facultyList]);
+
+  // Save faculty list to localStorage whenever it changes
+  useEffect(() => {
+    localStorage.setItem(FACULTY_STORAGE_KEY, JSON.stringify(facultyList));
+  }, [facultyList]);
 
   // Generate next section number for a course code
   const getNextSectionNumber = (courseCode: string): string => {
@@ -95,9 +137,11 @@ export default function App() {
     
     // Create a new course instance with unique section number
     const sectionNumber = getNextSectionNumber(course.code);
+    // Use course code as base ID to avoid issues with dragging already-scheduled courses
+    const baseId = course.code.toLowerCase().replace(/[^a-z0-9]/g, '-');
     const newInstance: Course = {
       ...course,
-      id: `${course.id}-${sectionNumber}`,
+      id: `${baseId}-${sectionNumber}`,
       sectionNumber,
       timeSlots: [{ day, startTime: time, endTime }],
       room: course.room === 'TBD' ? '07-1315' : course.room,
@@ -115,6 +159,13 @@ export default function App() {
     } else {
       // Add new instance
       setCourses([...courses, updatedCourse]);
+    }
+  };
+
+  const handleAddInstructor = (name: string) => {
+    const trimmedName = name.trim();
+    if (trimmedName && !facultyList.includes(trimmedName)) {
+      setFacultyList([...facultyList, trimmedName]);
     }
   };
 
@@ -215,14 +266,25 @@ export default function App() {
     toast.success('Schedule cleared');
   };
 
+  const handleSaveAsDefault = () => {
+    try {
+      localStorage.setItem(DEFAULT_STORAGE_KEY, JSON.stringify(courses));
+      setShowSaveDefaultDialog(false);
+      toast.success('Saved as default schedule for all visitors');
+    } catch (error) {
+      console.error('Failed to save default schedule:', error);
+      toast.error('Failed to save default schedule');
+    }
+  };
+
   // Scheduled courses are those with section numbers OR those with time slots
   const scheduledCourses = courses.filter(c => c.sectionNumber || c.timeSlots.length > 0);
   // Available courses are base courses (no section number and no time slots)
   const availableCourses = courses.filter(c => !c.sectionNumber && c.timeSlots.length === 0);
   
   // Get active faculty (those teaching scheduled courses) with course counts
-  const activeFaculty = Array.from(new Set(scheduledCourses.map(c => c.instructor))).filter(Boolean) as Faculty[];
-  const facultyCourseCount = (faculty: Faculty): number => {
+  const activeFaculty = Array.from(new Set(scheduledCourses.map(c => c.instructor))).filter(Boolean);
+  const facultyCourseCount = (faculty: string): number => {
     return scheduledCourses.filter(c => c.instructor === faculty && c.sectionNumber).length;
   };
 
@@ -370,10 +432,8 @@ export default function App() {
                                   <span>Available Courses ({availableCourses.length})</span>
                                 </div>
                                 <div className="flex items-center gap-1">
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    className="h-7 px-2"
+                                  <button
+                                    className="h-7 px-2 rounded-md hover:bg-gray-100 transition-colors"
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       fileInputRef.current?.click();
@@ -381,11 +441,9 @@ export default function App() {
                                     title="Upload Excel file"
                                   >
                                     <Upload className="w-3 h-3" />
-                                  </Button>
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    className="h-7 px-2 text-red-600 hover:text-red-700 hover:bg-red-50"
+                                  </button>
+                                  <button
+                                    className="h-7 px-2 rounded-md text-red-600 hover:text-red-700 hover:bg-red-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       setShowClearDialog(true);
@@ -394,7 +452,7 @@ export default function App() {
                                     disabled={availableCourses.length === 0}
                                   >
                                     <Trash2 className="w-3 h-3" />
-                                  </Button>
+                                  </button>
                                 </div>
                               </div>
                             </AccordionTrigger>
@@ -476,6 +534,8 @@ export default function App() {
           open={!!editingCourse}
           onClose={() => setEditingCourse(null)}
           onSave={handleSaveCourse}
+          facultyList={facultyList}
+          onAddInstructor={handleAddInstructor}
         />
 
         {/* Clear Available Courses Confirmation Dialog */}
@@ -530,6 +590,42 @@ export default function App() {
           onChange={handleFileUpload}
           className="hidden"
         />
+
+        {/* Save as Default Confirmation Dialog */}
+        <AlertDialog open={showSaveDefaultDialog} onOpenChange={setShowSaveDefaultDialog}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Save as Default Schedule?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will save the current schedule as the default for all visitors. The current state with{' '}
+                {scheduledCourses.length} scheduled course{scheduledCourses.length !== 1 ? 's' : ''} and{' '}
+                {availableCourses.length} available course{availableCourses.length !== 1 ? 's' : ''} will be loaded when anyone opens the application.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={handleSaveAsDefault}
+                className="bg-amber-600 hover:bg-amber-700"
+              >
+                <Star className="w-4 h-4 mr-2" />
+                Save as Default
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        {/* Save as Default Button - at bottom of page */}
+        <div className="mt-12 pt-6 border-t border-gray-300 flex justify-center">
+          <Button
+            onClick={() => setShowSaveDefaultDialog(true)}
+            variant="outline"
+            className="border-amber-600 text-amber-600 hover:bg-amber-50"
+          >
+            <Star className="w-4 h-4 mr-2" />
+            Save as Default
+          </Button>
+        </div>
       </div>
     </DndProvider>
   );

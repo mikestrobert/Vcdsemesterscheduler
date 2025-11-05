@@ -1,5 +1,5 @@
 import { useDrop, useDrag } from 'react-dnd';
-import { Course, DayOfWeek, FACULTY_COLORS, TimeSlot } from '../types/course';
+import { Course, DayOfWeek, getFacultyColor, TimeSlot } from '../types/course';
 import { Clock, GripVertical } from 'lucide-react';
 import { CourseDetailsPopover } from './CourseDetailsPopover';
 
@@ -116,7 +116,7 @@ export function TimeSlotCell({ day, time, courses, onDropCourse, onUnschedule, o
       {overlapCount > 0 && (
         <div className="flex gap-1 h-full">
           {coursesStartingHere.map(course => {
-            const colorClass = FACULTY_COLORS[course.instructor];
+            const colorClass = getFacultyColor(course.instructor);
             const duration = course.timeSlots.find(slot => slot.day === day);
             const startHour = duration ? parseInt(duration.startTime.split(':')[0]) : 0;
             const endHour = duration ? parseInt(duration.endTime.split(':')[0]) : 0;

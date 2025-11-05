@@ -1,5 +1,5 @@
 import { useDrag } from 'react-dnd';
-import { Faculty, FACULTY_COLORS } from '../types/course';
+import { Faculty, getFacultyColor } from '../types/course';
 import { User } from 'lucide-react';
 
 interface FacultyChipProps {
@@ -16,7 +16,7 @@ export function FacultyChip({ name, courseCount }: FacultyChipProps) {
     }),
   }));
 
-  const colorClass = FACULTY_COLORS[name];
+  const colorClass = getFacultyColor(name);
 
   return (
     <div

@@ -1,5 +1,5 @@
 import { useDrag } from 'react-dnd';
-import { Course, FACULTY_COLORS } from '../types/course';
+import { Course, getFacultyColor } from '../types/course';
 import { GripVertical, Clock, MapPin, User } from 'lucide-react';
 
 interface CourseCardProps {
@@ -16,7 +16,7 @@ export function CourseCard({ course, onEdit }: CourseCardProps) {
     }),
   }));
 
-  const colorClass = FACULTY_COLORS[course.instructor];
+  const colorClass = getFacultyColor(course.instructor);
   
   const formatTimeSlots = () => {
     if (course.timeSlots.length === 0) return 'No time assigned';

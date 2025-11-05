@@ -54,7 +54,7 @@ export function CourseDetailsPopover({ course, children, onEdit, onDelete }: Cou
               <div className={`w-4 h-4 rounded-full ${getColorDot()} mt-1`} />
               <div>
                 <h3 className="text-xl">
-                  {course.code} {course.sectionNumber && course.sectionNumber} {course.title}
+                  {course.code}{course.sectionNumber ? ` ${course.sectionNumber}` : ''} {course.title}
                 </h3>
               </div>
             </div>

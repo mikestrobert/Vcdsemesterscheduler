@@ -1,3 +1,4 @@
+import React from 'react';
 import { Course, DayOfWeek, DAYS, TIME_SLOTS, formatTime12Hour } from '../types/course';
 import { DayColumn } from './DayColumn';
 import { ScheduledCourseCard } from './ScheduledCourseCard';
@@ -103,8 +104,8 @@ export function CalendarGrid({ scheduledCourses, onDropCourse, onUnschedule, onE
 
           {/* Time Slots Grid */}
           {TIME_SLOTS.map(time => (
-            <>
-              <div key={`time-${time}`} className="bg-gray-50 p-2 flex items-center justify-center text-sm text-gray-600" style={{ height: `${CELL_HEIGHT}px` }}>
+            <React.Fragment key={time}>
+              <div className="bg-gray-50 p-2 flex items-center justify-center text-sm text-gray-600" style={{ height: `${CELL_HEIGHT}px` }}>
                 {formatTime12Hour(time)}
               </div>
               {DAYS.map(day => (
@@ -114,7 +115,7 @@ export function CalendarGrid({ scheduledCourses, onDropCourse, onUnschedule, onE
                   style={{ height: `${CELL_HEIGHT}px` }}
                 />
               ))}
-            </>
+            </React.Fragment>
           ))}
         </div>
 

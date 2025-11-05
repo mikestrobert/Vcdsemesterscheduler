@@ -1,4 +1,4 @@
-export type Faculty = 'Mike Strobert' | 'Anne Jordan' | 'Dan DeLuna' | 'Adam Smith' | 'Peter Byrne' | 'TBD';
+export type Faculty = string;
 
 export type DayOfWeek = 'Monday' | 'Tuesday' | 'Wednesday' | 'Thursday' | 'Friday';
 
@@ -21,7 +21,7 @@ export interface Course {
   sectionNumber?: string; // e.g., "01", "02" for multiple instances
 }
 
-export const FACULTY_COLORS: Record<Faculty, string> = {
+const KNOWN_FACULTY_COLORS: Record<string, string> = {
   'Mike Strobert': 'bg-green-100 border-green-300 text-green-900',
   'Anne Jordan': 'bg-blue-100 border-blue-300 text-blue-900',
   'Dan DeLuna': 'bg-purple-100 border-purple-300 text-purple-900',
@@ -29,6 +29,14 @@ export const FACULTY_COLORS: Record<Faculty, string> = {
   'Peter Byrne': 'bg-pink-100 border-pink-300 text-pink-900',
   'TBD': 'bg-gray-100 border-gray-300 text-gray-700',
 };
+
+// Helper function to get faculty color with fallback
+export function getFacultyColor(faculty: Faculty): string {
+  return KNOWN_FACULTY_COLORS[faculty] || 'bg-yellow-100 border-yellow-300 text-yellow-900';
+}
+
+// Keep FACULTY_COLORS for backward compatibility but mark as deprecated
+export const FACULTY_COLORS = KNOWN_FACULTY_COLORS;
 
 export const TIME_SLOTS = [
   '08:00', '09:00', '10:00', '11:00', '12:00', 
