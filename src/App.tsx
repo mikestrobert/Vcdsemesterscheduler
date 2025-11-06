@@ -91,6 +91,7 @@ export default function App() {
   const [isSaved, setIsSaved] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastSavedRef = useRef<string>(JSON.stringify(INITIAL_COURSES));
+  const sectionCountersRef = useRef<Record<string, number>>({});
 
   // Track changes to courses and mark as unsaved
   useEffect(() => {
@@ -116,14 +117,57 @@ export default function App() {
     localStorage.setItem(FACULTY_STORAGE_KEY, JSON.stringify(facultyList));
   }, [facultyList]);
 
-  // Generate next section number for a course code
+  // Track the highest section numbers that have been assigned per course code
+  useEffect(() => {
+    const updatedCounters = { ...sectionCountersRef.current };
+    let countersChanged = false;
+
+    courses.forEach(course => {
+      if (!course.sectionNumber) return;
+
+      const numericSection = parseInt(course.sectionNumber, 10);
+      if (Number.isNaN(numericSection)) return;
+
+      if (numericSection > (updatedCounters[course.code] ?? 0)) {
+        updatedCounters[course.code] = numericSection;
+        countersChanged = true;
+      }
+    });
+
+    if (countersChanged || Object.keys(sectionCountersRef.current).length === 0) {
+      sectionCountersRef.current = updatedCounters;
+    }
+  }, [courses]);
+
+  const recordSectionNumber = (course: Course) => {
+    if (!course.sectionNumber) return;
+
+    const numericSection = parseInt(course.sectionNumber, 10);
+    if (Number.isNaN(numericSection)) return;
+
+    const currentMax = sectionCountersRef.current[course.code] ?? 0;
+    if (numericSection > currentMax) {
+      sectionCountersRef.current = {
+        ...sectionCountersRef.current,
+        [course.code]: numericSection,
+      };
+    }
+  };
+
+  // Generate next section number for a course code, ensuring the sequence always increases
   const getNextSectionNumber = (courseCode: string): string => {
-    const existingSections = courses
-      .filter(c => c.code === courseCode && c.sectionNumber)
-      .map(c => parseInt(c.sectionNumber || '0'))
-      .sort((a, b) => b - a);
-    
-    const nextNumber = existingSections.length > 0 ? existingSections[0] + 1 : 1;
+    const highestExisting = courses.reduce((max, course) => {
+      if (course.code !== courseCode || !course.sectionNumber) return max;
+
+      const numericSection = parseInt(course.sectionNumber, 10);
+      if (Number.isNaN(numericSection)) return max;
+
+      return Math.max(max, numericSection);
+    }, 0);
+
+    const historicalMax = sectionCountersRef.current[courseCode] ?? 0;
+    const nextNumber = Math.max(highestExisting, historicalMax) + 1;
+
     return nextNumber.toString().padStart(2, '0');
   };
 
@@ -152,14 +196,17 @@ export default function App() {
 
   const handleSaveCourse = (updatedCourse: Course) => {
     // Check if this is a new instance or updating an existing one
-    const existingIndex = courses.findIndex(c => c.id === updatedCourse.id);
-    if (existingIndex >= 0) {
-      // Update existing course
-      setCourses(courses.map(c => c.id === updatedCourse.id ? updatedCourse : c));
-    } else {
-      // Add new instance
-      setCourses([...courses, updatedCourse]);
-    }
+    recordSectionNumber(updatedCourse);
+
+    setCourses(prevCourses => {
+      const existingIndex = prevCourses.findIndex(c => c.id === updatedCourse.id);
+
+      if (existingIndex >= 0) {
+        return prevCourses.map(c => c.id === updatedCourse.id ? updatedCourse : c);
+      }
+
+      return [...prevCourses, updatedCourse];
+    });
   };
 
   const handleAddInstructor = (name: string) => {
