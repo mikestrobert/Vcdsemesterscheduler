@@ -6,8 +6,8 @@ import { FacultyChip } from './components/FacultyChip';
 import { CalendarGrid } from './components/CalendarGrid';
 import { EditCourseDialog } from './components/EditCourseDialog';
 import { INITIAL_COURSES } from './data/courses';
-import { Course, DayOfWeek, TIME_SLOTS, DAYS, Faculty } from './types/course';
-import { Calendar, Clock, Users, Upload, Trash2, Save, Check, Star } from 'lucide-react';
+import { Course, DayOfWeek, TIME_SLOTS, DAYS, Faculty, formatTime12Hour, CourseStatus } from './types/course';
+import { Calendar, Clock, Users, Upload, Trash2, Save, Check, Star, FileSpreadsheet, FileDown, FileUp } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
 import { Textarea } from './components/ui/textarea';
@@ -90,7 +90,117 @@ export default function App() {
   const [showSaveDefaultDialog, setShowSaveDefaultDialog] = useState(false);
   const [isSaved, setIsSaved] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const scheduleFileInputRef = useRef<HTMLInputElement>(null);
   const lastSavedRef = useRef<string>(JSON.stringify(INITIAL_COURSES));
+  const sectionCountersRef = useRef<Record<string, number>>({});
+
+  interface ScheduleExportRow {
+    courseCode: string;
+    section: string;
+    title: string;
+    instructor: string;
+    room: string;
+    status: string;
+    day: string;
+    startTime: string;
+    endTime: string;
+  }
+
+  const buildScheduleExportRows = (): ScheduleExportRow[] => {
+    const scheduled = courses.filter(course => course.sectionNumber || course.timeSlots.length > 0);
+
+    return scheduled.flatMap(course => {
+      const base: Omit<ScheduleExportRow, 'day' | 'startTime' | 'endTime'> = {
+        courseCode: course.code,
+        section: course.sectionNumber ? course.sectionNumber : '',
+        title: course.title,
+        instructor: course.instructor,
+        room: course.room,
+        status: course.status.charAt(0).toUpperCase() + course.status.slice(1),
+      };
+
+      if (course.timeSlots.length === 0) {
+        return [
+          {
+            ...base,
+            day: 'TBD',
+            startTime: '',
+            endTime: '',
+          },
+        ];
+      }
+
+      return course.timeSlots.map(slot => ({
+        ...base,
+        day: slot.day,
+        startTime: formatTime12Hour(slot.startTime),
+        endTime: formatTime12Hour(slot.endTime),
+      }));
+    });
+  };
+
+  const downloadBlob = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const createPdfBlob = (lines: string[]): Blob => {
+    const escapePdfText = (text: string) =>
+      text.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+
+    const lineCommands = lines
+      .map((line, index) => {
+        const escaped = escapePdfText(line);
+        const suffix = index < lines.length - 1 ? '\nT*' : '';
+        return `(${escaped}) Tj${suffix}`;
+      })
+      .join('\n');
+
+    const textStream = `BT\n/F1 10 Tf\n1 0 0 1 72 750 Tm\n14 TL\n${lineCommands}\nET`;
+
+    const encoder = new TextEncoder();
+    const textStreamBytes = encoder.encode(textStream);
+
+    const objects = [
+      ['1 0 obj', '<< /Type /Catalog /Pages 2 0 R >>', 'endobj', ''].join('\n'),
+      ['2 0 obj', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', 'endobj', ''].join('\n'),
+      [
+        '3 0 obj',
+        '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+        'endobj',
+        '',
+      ].join('\n'),
+      `4 0 obj\n<< /Length ${textStreamBytes.length} >>\nstream\n${textStream}\nendstream\nendobj\n`,
+      ['5 0 obj', '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>', 'endobj', ''].join('\n'),
+    ];
+
+    const header = '%PDF-1.4\n';
+    let pdfString = header;
+    const offsets: number[] = [];
+    let currentOffset = encoder.encode(header).length;
+
+    objects.forEach(obj => {
+      offsets.push(currentOffset);
+      pdfString += obj;
+      currentOffset += encoder.encode(obj).length;
+    });
+
+    const xrefOffset = currentOffset;
+    let xref = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+    xref += offsets
+      .map(offset => `${offset.toString().padStart(10, '0')} 00000 n \n`)
+      .join('');
+
+    const trailer = `trailer\n<< /Root 1 0 R /Size ${objects.length + 1} >>\nstartxref\n${xrefOffset}\n%%EOF`;
+
+    pdfString += xref + trailer;
+
+    return new Blob([encoder.encode(pdfString)], { type: 'application/pdf' });
+  };
 
   // Track changes to courses and mark as unsaved
   useEffect(() => {
@@ -116,14 +226,57 @@ export default function App() {
     localStorage.setItem(FACULTY_STORAGE_KEY, JSON.stringify(facultyList));
   }, [facultyList]);
 
-  // Generate next section number for a course code
+  // Track the highest section numbers that have been assigned per course code
+  useEffect(() => {
+    const updatedCounters = { ...sectionCountersRef.current };
+    let countersChanged = false;
+
+    courses.forEach(course => {
+      if (!course.sectionNumber) return;
+
+      const numericSection = parseInt(course.sectionNumber, 10);
+      if (Number.isNaN(numericSection)) return;
+
+      if (numericSection > (updatedCounters[course.code] ?? 0)) {
+        updatedCounters[course.code] = numericSection;
+        countersChanged = true;
+      }
+    });
+
+    if (countersChanged || Object.keys(sectionCountersRef.current).length === 0) {
+      sectionCountersRef.current = updatedCounters;
+    }
+  }, [courses]);
+
+  const recordSectionNumber = (course: Course) => {
+    if (!course.sectionNumber) return;
+
+    const numericSection = parseInt(course.sectionNumber, 10);
+    if (Number.isNaN(numericSection)) return;
+
+    const currentMax = sectionCountersRef.current[course.code] ?? 0;
+    if (numericSection > currentMax) {
+      sectionCountersRef.current = {
+        ...sectionCountersRef.current,
+        [course.code]: numericSection,
+      };
+    }
+  };
+
+  // Generate next section number for a course code, ensuring the sequence always increases
   const getNextSectionNumber = (courseCode: string): string => {
-    const existingSections = courses
-      .filter(c => c.code === courseCode && c.sectionNumber)
-      .map(c => parseInt(c.sectionNumber || '0'))
-      .sort((a, b) => b - a);
-    
-    const nextNumber = existingSections.length > 0 ? existingSections[0] + 1 : 1;
+    const highestExisting = courses.reduce((max, course) => {
+      if (course.code !== courseCode || !course.sectionNumber) return max;
+
+      const numericSection = parseInt(course.sectionNumber, 10);
+      if (Number.isNaN(numericSection)) return max;
+
+      return Math.max(max, numericSection);
+    }, 0);
+
+    const historicalMax = sectionCountersRef.current[courseCode] ?? 0;
+    const nextNumber = Math.max(highestExisting, historicalMax) + 1;
+
     return nextNumber.toString().padStart(2, '0');
   };
 
@@ -152,14 +305,17 @@ export default function App() {
 
   const handleSaveCourse = (updatedCourse: Course) => {
     // Check if this is a new instance or updating an existing one
-    const existingIndex = courses.findIndex(c => c.id === updatedCourse.id);
-    if (existingIndex >= 0) {
-      // Update existing course
-      setCourses(courses.map(c => c.id === updatedCourse.id ? updatedCourse : c));
-    } else {
-      // Add new instance
-      setCourses([...courses, updatedCourse]);
-    }
+    recordSectionNumber(updatedCourse);
+
+    setCourses(prevCourses => {
+      const existingIndex = prevCourses.findIndex(c => c.id === updatedCourse.id);
+
+      if (existingIndex >= 0) {
+        return prevCourses.map(c => c.id === updatedCourse.id ? updatedCourse : c);
+      }
+
+      return [...prevCourses, updatedCourse];
+    });
   };
 
   const handleAddInstructor = (name: string) => {
@@ -197,31 +353,45 @@ export default function App() {
         const jsonData = XLSX.utils.sheet_to_json(worksheet) as any[];
 
         // Convert Excel data to Course objects
-        const newCourses: Course[] = jsonData.map((row, index) => {
+        const usedIds = new Set(courses.map(c => c.id));
+        const newCourses: Course[] = [];
+
+        jsonData.forEach((row, index) => {
           const code = row['Course Code'] || row['Code'] || row['code'] || '';
           const title = row['Title'] || row['title'] || row['Course Title'] || '';
+
+          if (!code || !title) {
+            return; // Only include courses with code and title
+          }
+
           const instructor = (row['Instructor'] || row['instructor'] || 'TBD') as Faculty;
           const room = row['Room'] || row['room'] || 'TBD';
           const status = (row['Status'] || row['status'] || 'backlog') as 'confirmed' | 'tentative' | 'backlog';
 
-          return {
-            id: code.toLowerCase().replace(/[^a-z0-9]/g, '-') || `course-${index}`,
-            code: code,
-            title: title,
-            instructor: instructor,
-            room: room,
+          const baseIdFromCode = code.toLowerCase().replace(/[^a-z0-9]/g, '-');
+          const baseId = baseIdFromCode ? baseIdFromCode : `course-${index}`;
+          let uniqueId = baseId;
+          let suffix = 1;
+          while (usedIds.has(uniqueId)) {
+            uniqueId = `${baseId}-${suffix}`;
+            suffix += 1;
+          }
+          usedIds.add(uniqueId);
+
+          newCourses.push({
+            id: uniqueId,
+            code,
+            title,
+            instructor,
+            room,
             timeSlots: [],
-            status: status,
-          };
-        }).filter(course => course.code && course.title); // Only include courses with code and title
+            status,
+          });
+        });
 
         if (newCourses.length > 0) {
-          // Merge with existing courses, avoiding duplicates by code
-          const existingCodes = new Set(courses.map(c => c.code));
-          const uniqueNewCourses = newCourses.filter(nc => !existingCodes.has(nc.code));
-          
-          setCourses([...courses, ...uniqueNewCourses]);
-          toast.success(`Successfully imported ${uniqueNewCourses.length} courses`);
+          setCourses([...courses, ...newCourses]);
+          toast.success(`Successfully imported ${newCourses.length} courses`);
         } else {
           toast.error('No valid courses found in the spreadsheet');
         }
@@ -235,6 +405,175 @@ export default function App() {
     // Reset file input
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
+    }
+  };
+
+  const normalizeStatus = (value: unknown): CourseStatus => {
+    const text = String(value ?? '').trim().toLowerCase();
+
+    switch (text) {
+      case 'confirmed':
+        return 'confirmed';
+      case 'tentative':
+        return 'tentative';
+      case 'backlog':
+      default:
+        return 'backlog';
+    }
+  };
+
+  const parseDayOfWeek = (value: unknown): DayOfWeek | null => {
+    if (!value) return null;
+    const text = String(value).trim();
+    const normalized = text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
+    return (DAYS as string[]).includes(normalized) ? (normalized as DayOfWeek) : null;
+  };
+
+  const parseTimeTo24Hour = (value: unknown): string | null => {
+    if (!value) return null;
+    const text = String(value).trim();
+    if (!text) return null;
+
+    const ampmMatch = text.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+    if (ampmMatch) {
+      let hour = parseInt(ampmMatch[1], 10);
+      const minutes = ampmMatch[2];
+      const suffix = ampmMatch[3].toUpperCase();
+      if (suffix === 'AM') {
+        if (hour === 12) hour = 0;
+      } else if (suffix === 'PM' && hour !== 12) {
+        hour += 12;
+      }
+      return `${hour.toString().padStart(2, '0')}:${minutes}`;
+    }
+
+    const twentyFourMatch = text.match(/^(\d{1,2}):(\d{2})$/);
+    if (twentyFourMatch) {
+      const hour = parseInt(twentyFourMatch[1], 10);
+      const minutes = twentyFourMatch[2];
+      if (hour >= 0 && hour <= 23) {
+        return `${hour.toString().padStart(2, '0')}:${minutes}`;
+      }
+    }
+
+    return null;
+  };
+
+  const handleImportSchedule = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheetName = workbook.SheetNames[0];
+        if (!sheetName) {
+          toast.error('No sheets found in the Excel file');
+          return;
+        }
+        const worksheet = workbook.Sheets[sheetName];
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' }) as Record<string, unknown>[];
+
+        if (jsonData.length === 0) {
+          toast.error('No schedule data found in the spreadsheet');
+          return;
+        }
+
+        const scheduledMap = new Map<string, Course>();
+        let generatedFallbackIndex = 0;
+
+        jsonData.forEach(row => {
+          const rawCode = row['Course Code'] ?? row['code'] ?? row['Code'];
+          const rawTitle = row['Title'] ?? row['Course Title'] ?? row['title'];
+          const code = String(rawCode ?? '').trim();
+          const title = String(rawTitle ?? '').trim();
+
+          if (!code || !title) {
+            return;
+          }
+
+          const rawSection = row['Section'] ?? row['section'] ?? row['Section Number'];
+          let section = String(rawSection ?? '').trim();
+          if (section && /^\d+$/.test(section)) {
+            section = section.padStart(2, '0');
+          }
+          if (!section) {
+            section = undefined;
+          }
+
+          const instructor = (String(row['Instructor'] ?? row['instructor'] ?? 'TBD').trim() || 'TBD') as Faculty;
+          const room = String(row['Room'] ?? row['room'] ?? 'TBD').trim() || 'TBD';
+          const status = normalizeStatus(row['Status'] ?? row['status']);
+
+          const keyParts = [code, section ?? '', instructor, title, room, status].join('__');
+          let courseEntry = scheduledMap.get(keyParts);
+          if (!courseEntry) {
+            const sanitizedBaseId = code.toLowerCase().replace(/[^a-z0-9]/g, '-');
+            const fallbackSection = (++generatedFallbackIndex).toString().padStart(2, '0');
+            const id = section
+              ? `${sanitizedBaseId}-${section}`
+              : `${sanitizedBaseId}-scheduled-${fallbackSection}`;
+
+            courseEntry = {
+              id,
+              code,
+              title,
+              instructor,
+              room,
+              status,
+              timeSlots: [],
+              ...(section ? { sectionNumber: section } : {}),
+            };
+            scheduledMap.set(keyParts, courseEntry);
+          }
+
+          const day = parseDayOfWeek(row['Day'] ?? row['day']);
+          const startTime = parseTimeTo24Hour(row['Start Time'] ?? row['Start'] ?? row['startTime']);
+          const endTime = parseTimeTo24Hour(row['End Time'] ?? row['End'] ?? row['endTime']);
+
+          if (day && startTime && endTime) {
+            const alreadyExists = courseEntry.timeSlots.some(
+              slot => slot.day === day && slot.startTime === startTime && slot.endTime === endTime,
+            );
+            if (!alreadyExists) {
+              courseEntry.timeSlots.push({ day, startTime, endTime });
+            }
+          }
+        });
+
+        const importedCourses = Array.from(scheduledMap.values());
+
+        if (importedCourses.length === 0) {
+          toast.error('No scheduled courses found in the spreadsheet');
+          return;
+        }
+
+        const newCounters: Record<string, number> = {};
+        importedCourses.forEach(course => {
+          if (!course.sectionNumber) return;
+          const numericSection = parseInt(course.sectionNumber, 10);
+          if (Number.isNaN(numericSection)) return;
+          newCounters[course.code] = Math.max(newCounters[course.code] ?? 0, numericSection);
+        });
+        sectionCountersRef.current = newCounters;
+
+        setCourses(prevCourses => {
+          const baseCourses = prevCourses.filter(c => !c.sectionNumber && c.timeSlots.length === 0);
+          return [...baseCourses, ...importedCourses];
+        });
+
+        toast.success(`Imported schedule with ${importedCourses.length} course${importedCourses.length === 1 ? '' : 's'}`);
+      } catch (error) {
+        console.error('Error importing schedule from Excel:', error);
+        toast.error('Failed to import schedule. Please ensure the file was exported from this app.');
+      }
+    };
+    reader.readAsArrayBuffer(file);
+
+    if (scheduleFileInputRef.current) {
+      scheduleFileInputRef.current.value = '';
     }
   };
 
@@ -277,6 +616,89 @@ export default function App() {
     }
   };
 
+  const handleExportToExcel = () => {
+    const rows = buildScheduleExportRows();
+
+    if (rows.length === 0) {
+      toast.error('No scheduled courses to export');
+      return;
+    }
+
+    const worksheetData = rows.map(row => ({
+      'Course Code': row.courseCode,
+      Section: row.section,
+      Title: row.title,
+      Instructor: row.instructor,
+      Room: row.room,
+      Status: row.status,
+      Day: row.day,
+      'Start Time': row.startTime,
+      'End Time': row.endTime,
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(worksheetData);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Schedule');
+    XLSX.writeFile(workbook, 'vcd-semester-schedule.xlsx');
+    toast.success('Schedule exported to Excel');
+  };
+
+  const handleExportToPdf = () => {
+    const rows = buildScheduleExportRows();
+
+    if (rows.length === 0) {
+      toast.error('No scheduled courses to export');
+      return;
+    }
+
+    const headers = ['Course Code', 'Section', 'Title', 'Instructor', 'Room', 'Status', 'Day', 'Start', 'End'];
+    const columnWidths = [12, 8, 28, 18, 10, 10, 10, 8, 8];
+
+    const formatCell = (value: string, width: number) => {
+      const trimmed = value.trim();
+      if (trimmed.length > width) {
+        return `${trimmed.slice(0, width - 3)}...`;
+      }
+      return trimmed.padEnd(width, ' ');
+    };
+
+    const headerLine = headers
+      .map((header, index) => formatCell(header, columnWidths[index]))
+      .join(' | ');
+
+    const lineSeparator = '-'.repeat(headerLine.length);
+
+    const dataLines = rows.map(row => {
+      const values = [
+        row.courseCode,
+        row.section || '-',
+        row.title,
+        row.instructor,
+        row.room,
+        row.status,
+        row.day,
+        row.startTime,
+        row.endTime,
+      ];
+
+      return values
+        .map((value, index) => formatCell(value, columnWidths[index]))
+        .join(' | ');
+    });
+
+    const lines = [
+      'VCD MFA Fall Semester Schedule',
+      '',
+      headerLine,
+      lineSeparator,
+      ...dataLines,
+    ];
+
+    const pdfBlob = createPdfBlob(lines);
+    downloadBlob(pdfBlob, 'vcd-semester-schedule.pdf');
+    toast.success('Schedule exported to PDF');
+  };
+
   // Scheduled courses are those with section numbers OR those with time slots
   const scheduledCourses = courses.filter(c => c.sectionNumber || c.timeSlots.length > 0);
   // Available courses are base courses (no section number and no time slots)
@@ -302,7 +724,33 @@ export default function App() {
                   Drag courses to schedule or click to edit
                 </p>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3 justify-end">
+                <Button
+                  onClick={() => scheduleFileInputRef.current?.click()}
+                  variant="outline"
+                  className="border-blue-600 text-blue-700 hover:bg-blue-50"
+                >
+                  <FileUp className="w-4 h-4 mr-2" />
+                  Import Schedule
+                </Button>
+                <Button
+                  onClick={handleExportToPdf}
+                  variant="outline"
+                  className="border-slate-600 text-slate-700 hover:bg-slate-50"
+                  disabled={scheduledCourses.length === 0}
+                >
+                  <FileDown className="w-4 h-4 mr-2" />
+                  Export PDF
+                </Button>
+                <Button
+                  onClick={handleExportToExcel}
+                  variant="outline"
+                  className="border-emerald-600 text-emerald-700 hover:bg-emerald-50"
+                  disabled={scheduledCourses.length === 0}
+                >
+                  <FileSpreadsheet className="w-4 h-4 mr-2" />
+                  Export Excel
+                </Button>
                 <motion.div
                   animate={isSaved ? { scale: [1, 1.05, 1] } : {}}
                   transition={{ duration: 0.3 }}
@@ -588,6 +1036,15 @@ export default function App() {
           type="file"
           accept=".xlsx,.xls"
           onChange={handleFileUpload}
+          className="hidden"
+        />
+
+        {/* Hidden file input for schedule import */}
+        <input
+          ref={scheduleFileInputRef}
+          type="file"
+          accept=".xlsx,.xls"
+          onChange={handleImportSchedule}
           className="hidden"
         />
 
