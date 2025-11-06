@@ -6,8 +6,8 @@ import { FacultyChip } from './components/FacultyChip';
 import { CalendarGrid } from './components/CalendarGrid';
 import { EditCourseDialog } from './components/EditCourseDialog';
 import { INITIAL_COURSES } from './data/courses';
-import { Course, DayOfWeek, TIME_SLOTS, DAYS, Faculty } from './types/course';
-import { Calendar, Clock, Users, Upload, Trash2, Save, Check, Star } from 'lucide-react';
+import { Course, DayOfWeek, TIME_SLOTS, DAYS, Faculty, formatTime12Hour } from './types/course';
+import { Calendar, Clock, Users, Upload, Trash2, Save, Check, Star, FileSpreadsheet, FileDown } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
 import { Textarea } from './components/ui/textarea';
@@ -92,6 +92,114 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastSavedRef = useRef<string>(JSON.stringify(INITIAL_COURSES));
   const sectionCountersRef = useRef<Record<string, number>>({});
+
+  interface ScheduleExportRow {
+    courseCode: string;
+    section: string;
+    title: string;
+    instructor: string;
+    room: string;
+    status: string;
+    day: string;
+    startTime: string;
+    endTime: string;
+  }
+
+  const buildScheduleExportRows = (): ScheduleExportRow[] => {
+    const scheduled = courses.filter(course => course.sectionNumber || course.timeSlots.length > 0);
+
+    return scheduled.flatMap(course => {
+      const base: Omit<ScheduleExportRow, 'day' | 'startTime' | 'endTime'> = {
+        courseCode: course.code,
+        section: course.sectionNumber ? course.sectionNumber : '',
+        title: course.title,
+        instructor: course.instructor,
+        room: course.room,
+        status: course.status.charAt(0).toUpperCase() + course.status.slice(1),
+      };
+
+      if (course.timeSlots.length === 0) {
+        return [
+          {
+            ...base,
+            day: 'TBD',
+            startTime: '',
+            endTime: '',
+          },
+        ];
+      }
+
+      return course.timeSlots.map(slot => ({
+        ...base,
+        day: slot.day,
+        startTime: formatTime12Hour(slot.startTime),
+        endTime: formatTime12Hour(slot.endTime),
+      }));
+    });
+  };
+
+  const downloadBlob = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const createPdfBlob = (lines: string[]): Blob => {
+    const escapePdfText = (text: string) =>
+      text.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+
+    const lineCommands = lines
+      .map((line, index) => {
+        const escaped = escapePdfText(line);
+        const suffix = index < lines.length - 1 ? '\nT*' : '';
+        return `(${escaped}) Tj${suffix}`;
+      })
+      .join('\n');
+
+    const textStream = `BT\n/F1 10 Tf\n1 0 0 1 72 750 Tm\n14 TL\n${lineCommands}\nET`;
+
+    const encoder = new TextEncoder();
+    const textStreamBytes = encoder.encode(textStream);
+
+    const objects = [
+      ['1 0 obj', '<< /Type /Catalog /Pages 2 0 R >>', 'endobj', ''].join('\n'),
+      ['2 0 obj', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', 'endobj', ''].join('\n'),
+      [
+        '3 0 obj',
+        '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+        'endobj',
+        '',
+      ].join('\n'),
+      `4 0 obj\n<< /Length ${textStreamBytes.length} >>\nstream\n${textStream}\nendstream\nendobj\n`,
+      ['5 0 obj', '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>', 'endobj', ''].join('\n'),
+    ];
+
+    const header = '%PDF-1.4\n';
+    let pdfString = header;
+    const offsets: number[] = [];
+    let currentOffset = encoder.encode(header).length;
+
+    objects.forEach(obj => {
+      offsets.push(currentOffset);
+      pdfString += obj;
+      currentOffset += encoder.encode(obj).length;
+    });
+
+    const xrefOffset = currentOffset;
+    let xref = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+    xref += offsets
+      .map(offset => `${offset.toString().padStart(10, '0')} 00000 n \n`)
+      .join('');
+
+    const trailer = `trailer\n<< /Root 1 0 R /Size ${objects.length + 1} >>\nstartxref\n${xrefOffset}\n%%EOF`;
+
+    pdfString += xref + trailer;
+
+    return new Blob([encoder.encode(pdfString)], { type: 'application/pdf' });
+  };
 
   // Track changes to courses and mark as unsaved
   useEffect(() => {
@@ -338,6 +446,89 @@ export default function App() {
     }
   };
 
+  const handleExportToExcel = () => {
+    const rows = buildScheduleExportRows();
+
+    if (rows.length === 0) {
+      toast.error('No scheduled courses to export');
+      return;
+    }
+
+    const worksheetData = rows.map(row => ({
+      'Course Code': row.courseCode,
+      Section: row.section,
+      Title: row.title,
+      Instructor: row.instructor,
+      Room: row.room,
+      Status: row.status,
+      Day: row.day,
+      'Start Time': row.startTime,
+      'End Time': row.endTime,
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(worksheetData);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Schedule');
+    XLSX.writeFile(workbook, 'vcd-semester-schedule.xlsx');
+    toast.success('Schedule exported to Excel');
+  };
+
+  const handleExportToPdf = () => {
+    const rows = buildScheduleExportRows();
+
+    if (rows.length === 0) {
+      toast.error('No scheduled courses to export');
+      return;
+    }
+
+    const headers = ['Course Code', 'Section', 'Title', 'Instructor', 'Room', 'Status', 'Day', 'Start', 'End'];
+    const columnWidths = [12, 8, 28, 18, 10, 10, 10, 8, 8];
+
+    const formatCell = (value: string, width: number) => {
+      const trimmed = value.trim();
+      if (trimmed.length > width) {
+        return `${trimmed.slice(0, width - 3)}...`;
+      }
+      return trimmed.padEnd(width, ' ');
+    };
+
+    const headerLine = headers
+      .map((header, index) => formatCell(header, columnWidths[index]))
+      .join(' | ');
+
+    const lineSeparator = '-'.repeat(headerLine.length);
+
+    const dataLines = rows.map(row => {
+      const values = [
+        row.courseCode,
+        row.section || '-',
+        row.title,
+        row.instructor,
+        row.room,
+        row.status,
+        row.day,
+        row.startTime,
+        row.endTime,
+      ];
+
+      return values
+        .map((value, index) => formatCell(value, columnWidths[index]))
+        .join(' | ');
+    });
+
+    const lines = [
+      'VCD MFA Fall Semester Schedule',
+      '',
+      headerLine,
+      lineSeparator,
+      ...dataLines,
+    ];
+
+    const pdfBlob = createPdfBlob(lines);
+    downloadBlob(pdfBlob, 'vcd-semester-schedule.pdf');
+    toast.success('Schedule exported to PDF');
+  };
+
   // Scheduled courses are those with section numbers OR those with time slots
   const scheduledCourses = courses.filter(c => c.sectionNumber || c.timeSlots.length > 0);
   // Available courses are base courses (no section number and no time slots)
@@ -363,7 +554,25 @@ export default function App() {
                   Drag courses to schedule or click to edit
                 </p>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3 justify-end">
+                <Button
+                  onClick={handleExportToPdf}
+                  variant="outline"
+                  className="border-slate-600 text-slate-700 hover:bg-slate-50"
+                  disabled={scheduledCourses.length === 0}
+                >
+                  <FileDown className="w-4 h-4 mr-2" />
+                  Export PDF
+                </Button>
+                <Button
+                  onClick={handleExportToExcel}
+                  variant="outline"
+                  className="border-emerald-600 text-emerald-700 hover:bg-emerald-50"
+                  disabled={scheduledCourses.length === 0}
+                >
+                  <FileSpreadsheet className="w-4 h-4 mr-2" />
+                  Export Excel
+                </Button>
                 <motion.div
                   animate={isSaved ? { scale: [1, 1.05, 1] } : {}}
                   transition={{ duration: 0.3 }}
