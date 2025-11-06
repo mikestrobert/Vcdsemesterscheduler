@@ -6,8 +6,8 @@ import { FacultyChip } from './components/FacultyChip';
 import { CalendarGrid } from './components/CalendarGrid';
 import { EditCourseDialog } from './components/EditCourseDialog';
 import { INITIAL_COURSES } from './data/courses';
-import { Course, DayOfWeek, TIME_SLOTS, DAYS, Faculty, formatTime12Hour } from './types/course';
-import { Calendar, Clock, Users, Upload, Trash2, Save, Check, Star, FileSpreadsheet, FileDown } from 'lucide-react';
+import { Course, DayOfWeek, TIME_SLOTS, DAYS, Faculty, formatTime12Hour, CourseStatus } from './types/course';
+import { Calendar, Clock, Users, Upload, Trash2, Save, Check, Star, FileSpreadsheet, FileDown, FileUp } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
 import { Textarea } from './components/ui/textarea';
@@ -90,6 +90,7 @@ export default function App() {
   const [showSaveDefaultDialog, setShowSaveDefaultDialog] = useState(false);
   const [isSaved, setIsSaved] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const scheduleFileInputRef = useRef<HTMLInputElement>(null);
   const lastSavedRef = useRef<string>(JSON.stringify(INITIAL_COURSES));
   const sectionCountersRef = useRef<Record<string, number>>({});
 
@@ -407,6 +408,175 @@ export default function App() {
     }
   };
 
+  const normalizeStatus = (value: unknown): CourseStatus => {
+    const text = String(value ?? '').trim().toLowerCase();
+
+    switch (text) {
+      case 'confirmed':
+        return 'confirmed';
+      case 'tentative':
+        return 'tentative';
+      case 'backlog':
+      default:
+        return 'backlog';
+    }
+  };
+
+  const parseDayOfWeek = (value: unknown): DayOfWeek | null => {
+    if (!value) return null;
+    const text = String(value).trim();
+    const normalized = text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
+    return (DAYS as string[]).includes(normalized) ? (normalized as DayOfWeek) : null;
+  };
+
+  const parseTimeTo24Hour = (value: unknown): string | null => {
+    if (!value) return null;
+    const text = String(value).trim();
+    if (!text) return null;
+
+    const ampmMatch = text.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+    if (ampmMatch) {
+      let hour = parseInt(ampmMatch[1], 10);
+      const minutes = ampmMatch[2];
+      const suffix = ampmMatch[3].toUpperCase();
+      if (suffix === 'AM') {
+        if (hour === 12) hour = 0;
+      } else if (suffix === 'PM' && hour !== 12) {
+        hour += 12;
+      }
+      return `${hour.toString().padStart(2, '0')}:${minutes}`;
+    }
+
+    const twentyFourMatch = text.match(/^(\d{1,2}):(\d{2})$/);
+    if (twentyFourMatch) {
+      const hour = parseInt(twentyFourMatch[1], 10);
+      const minutes = twentyFourMatch[2];
+      if (hour >= 0 && hour <= 23) {
+        return `${hour.toString().padStart(2, '0')}:${minutes}`;
+      }
+    }
+
+    return null;
+  };
+
+  const handleImportSchedule = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheetName = workbook.SheetNames[0];
+        if (!sheetName) {
+          toast.error('No sheets found in the Excel file');
+          return;
+        }
+        const worksheet = workbook.Sheets[sheetName];
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' }) as Record<string, unknown>[];
+
+        if (jsonData.length === 0) {
+          toast.error('No schedule data found in the spreadsheet');
+          return;
+        }
+
+        const scheduledMap = new Map<string, Course>();
+        let generatedFallbackIndex = 0;
+
+        jsonData.forEach(row => {
+          const rawCode = row['Course Code'] ?? row['code'] ?? row['Code'];
+          const rawTitle = row['Title'] ?? row['Course Title'] ?? row['title'];
+          const code = String(rawCode ?? '').trim();
+          const title = String(rawTitle ?? '').trim();
+
+          if (!code || !title) {
+            return;
+          }
+
+          const rawSection = row['Section'] ?? row['section'] ?? row['Section Number'];
+          let section = String(rawSection ?? '').trim();
+          if (section && /^\d+$/.test(section)) {
+            section = section.padStart(2, '0');
+          }
+          if (!section) {
+            section = undefined;
+          }
+
+          const instructor = (String(row['Instructor'] ?? row['instructor'] ?? 'TBD').trim() || 'TBD') as Faculty;
+          const room = String(row['Room'] ?? row['room'] ?? 'TBD').trim() || 'TBD';
+          const status = normalizeStatus(row['Status'] ?? row['status']);
+
+          const keyParts = [code, section ?? '', instructor, title, room, status].join('__');
+          let courseEntry = scheduledMap.get(keyParts);
+          if (!courseEntry) {
+            const sanitizedBaseId = code.toLowerCase().replace(/[^a-z0-9]/g, '-');
+            const fallbackSection = (++generatedFallbackIndex).toString().padStart(2, '0');
+            const id = section
+              ? `${sanitizedBaseId}-${section}`
+              : `${sanitizedBaseId}-scheduled-${fallbackSection}`;
+
+            courseEntry = {
+              id,
+              code,
+              title,
+              instructor,
+              room,
+              status,
+              timeSlots: [],
+              ...(section ? { sectionNumber: section } : {}),
+            };
+            scheduledMap.set(keyParts, courseEntry);
+          }
+
+          const day = parseDayOfWeek(row['Day'] ?? row['day']);
+          const startTime = parseTimeTo24Hour(row['Start Time'] ?? row['Start'] ?? row['startTime']);
+          const endTime = parseTimeTo24Hour(row['End Time'] ?? row['End'] ?? row['endTime']);
+
+          if (day && startTime && endTime) {
+            const alreadyExists = courseEntry.timeSlots.some(
+              slot => slot.day === day && slot.startTime === startTime && slot.endTime === endTime,
+            );
+            if (!alreadyExists) {
+              courseEntry.timeSlots.push({ day, startTime, endTime });
+            }
+          }
+        });
+
+        const importedCourses = Array.from(scheduledMap.values());
+
+        if (importedCourses.length === 0) {
+          toast.error('No scheduled courses found in the spreadsheet');
+          return;
+        }
+
+        const newCounters: Record<string, number> = {};
+        importedCourses.forEach(course => {
+          if (!course.sectionNumber) return;
+          const numericSection = parseInt(course.sectionNumber, 10);
+          if (Number.isNaN(numericSection)) return;
+          newCounters[course.code] = Math.max(newCounters[course.code] ?? 0, numericSection);
+        });
+        sectionCountersRef.current = newCounters;
+
+        setCourses(prevCourses => {
+          const baseCourses = prevCourses.filter(c => !c.sectionNumber && c.timeSlots.length === 0);
+          return [...baseCourses, ...importedCourses];
+        });
+
+        toast.success(`Imported schedule with ${importedCourses.length} course${importedCourses.length === 1 ? '' : 's'}`);
+      } catch (error) {
+        console.error('Error importing schedule from Excel:', error);
+        toast.error('Failed to import schedule. Please ensure the file was exported from this app.');
+      }
+    };
+    reader.readAsArrayBuffer(file);
+
+    if (scheduleFileInputRef.current) {
+      scheduleFileInputRef.current.value = '';
+    }
+  };
+
   const handleClearAvailableCourses = () => {
     // Keep only scheduled courses (those with section numbers or time slots)
     const scheduledOnly = courses.filter(c => c.sectionNumber || c.timeSlots.length > 0);
@@ -555,6 +725,14 @@ export default function App() {
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-3 justify-end">
+                <Button
+                  onClick={() => scheduleFileInputRef.current?.click()}
+                  variant="outline"
+                  className="border-blue-600 text-blue-700 hover:bg-blue-50"
+                >
+                  <FileUp className="w-4 h-4 mr-2" />
+                  Import Schedule
+                </Button>
                 <Button
                   onClick={handleExportToPdf}
                   variant="outline"
@@ -858,6 +1036,15 @@ export default function App() {
           type="file"
           accept=".xlsx,.xls"
           onChange={handleFileUpload}
+          className="hidden"
+        />
+
+        {/* Hidden file input for schedule import */}
+        <input
+          ref={scheduleFileInputRef}
+          type="file"
+          accept=".xlsx,.xls"
+          onChange={handleImportSchedule}
           className="hidden"
         />
 
